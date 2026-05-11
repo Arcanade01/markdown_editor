@@ -21,8 +21,11 @@ let headings = [];
 let activeHeadingId = "";
 let previewImageUrls = [];
 let selectionSyncFrame = 0;
+let previewScrollSyncFrame = 0;
 let previewSourceElements = [];
 let headingHighlightTimer = null;
+let suppressEditorSelectionSync = false;
+let suppressPreviewScrollSync = false;
 
 const starterMarkdown = `# MarkdownEditor
 
@@ -191,7 +194,12 @@ function bindEvents() {
   });
 
   document.addEventListener("paste", handlePaste, true);
-  editor.addEventListener("scroll", scheduleSelectionSync);
+  editor.addEventListener("scroll", () => {
+    if (!suppressEditorSelectionSync) scheduleSelectionSync();
+  });
+  preview.addEventListener("scroll", () => {
+    if (!suppressPreviewScrollSync) schedulePreviewScrollSync();
+  });
   editor.addEventListener("click", scheduleSelectionSync);
   editor.addEventListener("keyup", scheduleSelectionSync);
   editor.addEventListener("mouseup", scheduleSelectionSync);
@@ -399,8 +407,15 @@ function renderAll() {
 }
 
 function scheduleSelectionSync() {
+  if (suppressEditorSelectionSync) return;
   cancelAnimationFrame(selectionSyncFrame);
   selectionSyncFrame = requestAnimationFrame(syncPreviewToEditorSelection);
+}
+
+function schedulePreviewScrollSync() {
+  if (suppressPreviewScrollSync) return;
+  cancelAnimationFrame(previewScrollSyncFrame);
+  previewScrollSyncFrame = requestAnimationFrame(syncEditorToPreviewTop);
 }
 
 function syncPreviewToEditorSelection() {
@@ -412,7 +427,98 @@ function syncPreviewToEditorSelection() {
   const previewRect = preview.getBoundingClientRect();
   const targetRect = getPreviewSourceRect(target, sourceIndex) || target.getBoundingClientRect();
   const targetRelativeY = targetRect.top - previewRect.top;
+  suppressPreviewScrollSync = true;
   preview.scrollTop += targetRelativeY - editorRelativeY;
+  requestAnimationFrame(() => {
+    suppressPreviewScrollSync = false;
+  });
+}
+
+function syncEditorToPreviewTop() {
+  const sourceIndex = getPreviewTopSourceIndex();
+  if (sourceIndex === null) return;
+
+  const editorY = getEditorSelectionY(sourceIndex);
+  const editorTop = editor.getBoundingClientRect().top;
+  suppressEditorSelectionSync = true;
+  editor.scrollTop += editorY - editorTop;
+  requestAnimationFrame(() => {
+    suppressEditorSelectionSync = false;
+  });
+}
+
+function getPreviewTopSourceIndex() {
+  if (previewSourceElements.length === 0) return null;
+
+  const previewRect = preview.getBoundingClientRect();
+  const previewTop = previewRect.top + 1;
+  let previous = previewSourceElements[0];
+
+  for (const element of previewSourceElements) {
+    const rect = element.getBoundingClientRect();
+    if (rect.bottom >= previewTop) {
+      return getPreviewCaretSourceIndex(element, previewRect, previewTop) ?? getElementSourceIndexForTop(element);
+    }
+    previous = element;
+  }
+
+  return getPreviewCaretSourceIndex(previous, previewRect, previewTop) ?? getElementSourceIndexForTop(previous);
+}
+
+function getElementSourceIndexForTop(element) {
+  const textStart = Number(element.dataset.sourceTextStart);
+  if (Number.isFinite(textStart)) return textStart;
+  return Number(element.dataset.sourceStart) || 0;
+}
+
+function getPreviewCaretSourceIndex(element, previewRect, y) {
+  const textStart = Number(element.dataset.sourceTextStart);
+  if (!Number.isFinite(textStart)) return null;
+
+  const sampleXs = [
+    previewRect.left + 28,
+    previewRect.left + 72,
+    previewRect.left + previewRect.width * 0.5,
+    previewRect.right - 28
+  ];
+
+  for (const x of sampleXs) {
+    const caret = getCaretAtPoint(x, y + 2);
+    if (!caret || !element.contains(caret.node)) continue;
+
+    const offset = getTextOffsetWithinElement(element, caret.node, caret.offset);
+    if (offset !== null) return textStart + offset;
+  }
+
+  return null;
+}
+
+function getCaretAtPoint(x, y) {
+  if (document.caretPositionFromPoint) {
+    const position = document.caretPositionFromPoint(x, y);
+    if (position) return { node: position.offsetNode, offset: position.offset };
+  }
+
+  if (document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(x, y);
+    if (range) return { node: range.startContainer, offset: range.startOffset };
+  }
+
+  return null;
+}
+
+function getTextOffsetWithinElement(element, targetNode, targetOffset) {
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  let offset = 0;
+  let node = walker.nextNode();
+
+  while (node) {
+    if (node === targetNode) return offset + targetOffset;
+    offset += node.textContent.length;
+    node = walker.nextNode();
+  }
+
+  return null;
 }
 
 function findPreviewSourceElement(sourceIndex) {
