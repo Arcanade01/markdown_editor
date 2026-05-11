@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MarkdownEditor</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">MarkdownEditor</div>
+    <button id="syntaxButton" class="toolbar-button" type="button">Markdown記法</button>
+    <div class="folder-status" id="folderStatus">フォルダ未選択</div>
+    <button id="loadButton" class="toolbar-button primary" type="button">読み込み</button>
+  </header>
+
+  <main class="workspace" id="workspace">
+    <aside class="toc-panel panel" aria-label="目次">
+      <div class="panel-title">目次</div>
+      <nav id="tocList" class="toc-list"></nav>
+    </aside>
+
+    <div class="resizer" data-resizer="toc" aria-hidden="true"></div>
+
+    <section class="editor-panel panel" aria-label="Markdown入力">
+      <div class="panel-title">Markdown</div>
+      <textarea id="editor" spellcheck="false" placeholder="# 見出し&#10;&#10;ここにMarkdownを書きます。"></textarea>
+    </section>
+
+    <div class="resizer" data-resizer="editor" aria-hidden="true"></div>
+
+    <section class="preview-panel panel" aria-label="Markdownプレビュー">
+      <div class="panel-title">プレビュー</div>
+      <article id="preview" class="markdown-preview"></article>
+    </section>
+  </main>
+
+  <div id="syntaxModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="syntaxTitle">
+      <div class="modal-header">
+        <h2 id="syntaxTitle">Markdown記法</h2>
+        <button id="closeSyntaxButton" class="icon-button" type="button" aria-label="閉じる">×</button>
+      </div>
+      <div class="syntax-layout">
+        <nav id="syntaxCategories" class="syntax-categories" aria-label="カテゴリ"></nav>
+        <div class="syntax-detail">
+          <section class="syntax-sample">
+            <div class="syntax-label">Markdown</div>
+            <pre id="syntaxMarkdown"></pre>
+          </section>
+          <section class="syntax-sample">
+            <div class="syntax-label">プレビュー</div>
+            <div id="syntaxPreview" class="markdown-preview syntax-preview"></div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
