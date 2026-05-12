@@ -12,6 +12,15 @@ const syntaxMarkdown = document.getElementById("syntaxMarkdown");
 const syntaxPreview = document.getElementById("syntaxPreview");
 
 const STORAGE_KEY = "markdown-editor-draft";
+const ALLOWED_HTML_TAGS = new Set([
+  "a", "abbr", "b", "br", "code", "del", "details", "div", "em", "hr", "i", "ins", "kbd", "li",
+  "mark", "ol", "p", "pre", "s", "small", "span", "strong", "sub", "summary", "sup", "table",
+  "tbody", "td", "th", "thead", "tr", "u", "ul"
+]);
+const VOID_HTML_TAGS = new Set(["br", "hr"]);
+const ALLOWED_HTML_ATTRIBUTES = new Set([
+  "align", "alt", "class", "colspan", "height", "href", "rowspan", "src", "title", "width"
+]);
 
 let directoryHandle = null;
 let indexHandle = null;
@@ -19,13 +28,15 @@ let saveTimer = null;
 let renderSequence = 0;
 let headings = [];
 let activeHeadingId = "";
-let previewImageUrls = [];
+const previewImageUrlCache = new Map();
 let selectionSyncFrame = 0;
 let previewScrollSyncFrame = 0;
 let previewSourceElements = [];
 let headingHighlightTimer = null;
 let suppressEditorSelectionSync = false;
 let suppressPreviewScrollSync = false;
+let suppressEditorSelectionTimer = null;
+let suppressPreviewScrollTimer = null;
 
 const starterMarkdown = `# MarkdownEditor
 
@@ -125,6 +136,11 @@ syntaxExamples.push(
     group: "通常Markdown",
     label: "区切り線",
     markdown: "上の内容\n\n---\n\n下の内容\n\n***\n\n別の区切り"
+  },
+  {
+    group: "通常Markdown",
+    label: "HTMLタグ",
+    markdown: "1行目<br>2行目\n\n<mark>ハイライト</mark>\n\n<sub>下付き</sub> と <sup>上付き</sup>\n\n<details>\n<summary>詳細を開く</summary>\n隠れている内容です。\n</details>"
   },
   {
     group: "Mermaid",
@@ -236,6 +252,7 @@ async function loadFolder() {
       return;
     }
 
+    clearPreviewImageCache();
     directoryHandle = pickedDirectory;
     indexHandle = await directoryHandle.getFileHandle("index.md", { create: true });
     const file = await indexHandle.getFile();
@@ -427,11 +444,8 @@ function syncPreviewToEditorSelection() {
   const previewRect = preview.getBoundingClientRect();
   const targetRect = getPreviewSourceRect(target, sourceIndex) || target.getBoundingClientRect();
   const targetRelativeY = targetRect.top - previewRect.top;
-  suppressPreviewScrollSync = true;
+  suppressPreviewSyncFor(180);
   preview.scrollTop += targetRelativeY - editorRelativeY;
-  requestAnimationFrame(() => {
-    suppressPreviewScrollSync = false;
-  });
 }
 
 function syncEditorToPreviewTop() {
@@ -440,11 +454,24 @@ function syncEditorToPreviewTop() {
 
   const editorY = getEditorSelectionY(sourceIndex);
   const editorTop = editor.getBoundingClientRect().top;
-  suppressEditorSelectionSync = true;
+  suppressEditorSyncFor(180);
   editor.scrollTop += editorY - editorTop;
-  requestAnimationFrame(() => {
+}
+
+function suppressPreviewSyncFor(duration) {
+  suppressPreviewScrollSync = true;
+  clearTimeout(suppressPreviewScrollTimer);
+  suppressPreviewScrollTimer = setTimeout(() => {
+    suppressPreviewScrollSync = false;
+  }, duration);
+}
+
+function suppressEditorSyncFor(duration) {
+  suppressEditorSelectionSync = true;
+  clearTimeout(suppressEditorSelectionTimer);
+  suppressEditorSelectionTimer = setTimeout(() => {
     suppressEditorSelectionSync = false;
-  });
+  }, duration);
 }
 
 function getPreviewTopSourceIndex() {
@@ -522,17 +549,42 @@ function getTextOffsetWithinElement(element, targetNode, targetOffset) {
 }
 
 function findPreviewSourceElement(sourceIndex) {
+  const mathElement = findMathSourceElement(sourceIndex);
+  if (mathElement) return mathElement;
+
   let previous = null;
+  let bestMatch = null;
+  let bestMatchSize = Infinity;
 
   for (const element of previewSourceElements) {
     const start = Number(element.dataset.sourceStart);
     const end = Number(element.dataset.sourceEnd);
-    if (start <= sourceIndex && sourceIndex <= end) return element;
-    if (start > sourceIndex) return previous || element;
+    if (start <= sourceIndex && sourceIndex <= end) {
+      const size = end - start;
+      if (size < bestMatchSize) {
+        bestMatch = element;
+        bestMatchSize = size;
+      }
+      continue;
+    }
+    if (start > sourceIndex) return bestMatch || previous || element;
     previous = element;
   }
 
-  return previous;
+  return bestMatch || previous;
+}
+
+function findMathSourceElement(sourceIndex) {
+  for (const element of previewSourceElements) {
+    if (!element.classList.contains("math-inline") && !element.classList.contains("math-block")) continue;
+
+    const start = Number(element.dataset.sourceStart);
+    const end = Number(element.dataset.sourceEnd);
+    const tolerance = element.classList.contains("math-inline") ? 1 : 0;
+    if (start <= sourceIndex && sourceIndex <= end + tolerance) return element;
+  }
+
+  return null;
 }
 
 function cachePreviewSourceElements() {
@@ -542,6 +594,10 @@ function cachePreviewSourceElements() {
 }
 
 function getPreviewSourceRect(element, sourceIndex) {
+  if (element.classList.contains("math-inline") || element.classList.contains("math-block")) {
+    return element.getBoundingClientRect();
+  }
+
   const textStart = Number(element.dataset.sourceTextStart);
   if (!Number.isFinite(textStart)) return null;
 
@@ -740,7 +796,7 @@ function markdownToHtml(markdown, headingSource) {
     const heading = headingByLine.get(index);
     if (heading) {
       const headingMarker = lines[index].match(/^#{1,6}\s+/)?.[0] || "";
-      html.push(`<h${heading.level} id="${escapeAttr(heading.id)}" data-heading-id="${escapeAttr(heading.id)}" ${sourceRangeAttributes(lineStarts[index], lineStarts[index] + lines[index].length, lineStarts[index] + headingMarker.length)}>${inlineMarkdown(heading.text)}</h${heading.level}>`);
+      html.push(`<h${heading.level} id="${escapeAttr(heading.id)}" data-heading-id="${escapeAttr(heading.id)}" ${sourceRangeAttributes(lineStarts[index], lineStarts[index] + lines[index].length, lineStarts[index] + headingMarker.length)}>${inlineMarkdown(heading.text, lineStarts[index] + headingMarker.length)}</h${heading.level}>`);
       index += 1;
       continue;
     }
@@ -811,14 +867,14 @@ function markdownToHtml(markdown, headingSource) {
     }
     html.push(`<p>${paragraph.map((text, offset) => {
       const lineIndex = paragraphStart + offset;
-      return `<span ${sourceRangeAttributes(lineStarts[lineIndex], lineStarts[lineIndex] + lines[lineIndex].length, lineStarts[lineIndex])}>${inlineMarkdown(text)}</span>`;
+      return `<span ${sourceRangeAttributes(lineStarts[lineIndex], lineStarts[lineIndex] + lines[lineIndex].length, lineStarts[lineIndex])}>${inlineMarkdown(text, lineStarts[lineIndex])}</span>`;
     }).join("<br>")}</p>`);
   }
 
   return html.join("\n");
 }
 
-function inlineMarkdown(text) {
+function inlineMarkdown(text, sourceOffset = null) {
   const tokens = [];
   const store = (value) => {
     const token = `@@MDTOKEN${tokens.length}@@`;
@@ -828,14 +884,23 @@ function inlineMarkdown(text) {
 
   let output = text
     .replace(/`([^`]+)`/g, (_, code) => store(`<code>${escapeHtml(code)}</code>`))
-    .replace(/(^|[^\\])\$([^$\n]+?)\$/g, (_, prefix, latex) => `${prefix}${store(`<span class="math-inline" data-latex="${escapeAttr(latex)}">${escapeHtml(latex)}</span>`)}`)
+    .replace(/(^|[^\\])\$([^$\n]+?)\$/g, (match, prefix, latex, offset) => {
+      const mathStart = offset + prefix.length;
+      const range = sourceOffset === null ? "" : ` ${sourceRangeAttributes(sourceOffset + mathStart, sourceOffset + mathStart + latex.length + 2)}`;
+      return `${prefix}${store(`<span class="math-inline"${range} data-latex="${escapeAttr(latex)}">${escapeHtml(latex)}</span>`)}`;
+    })
     .replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, alt, src) => {
       const safeSrc = sanitizeUrl(src);
-      return store(`<img src="${escapeAttr(safeSrc)}" alt="${escapeAttr(alt)}" data-local-src="${escapeAttr(safeSrc)}">`);
+      const renderSrc = getImageRenderSrc(safeSrc);
+      return store(`<img src="${escapeAttr(renderSrc)}" alt="${escapeAttr(alt)}" data-local-src="${escapeAttr(safeSrc)}">`);
     })
     .replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, label, href) => {
       const safeHref = sanitizeUrl(href);
       return store(`<a href="${escapeAttr(safeHref)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`);
+    })
+    .replace(/<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s+[^<>]*?)?\s*\/?>/g, (tag) => {
+      const safeTag = sanitizeHtmlTag(tag);
+      return safeTag ? store(safeTag) : tag;
     });
 
   output = escapeHtml(output)
@@ -859,11 +924,11 @@ function paragraphsFromLines(lines) {
 function renderListItem(item) {
   const task = item.text.match(/^\[(x|X| )\]\s+(.*)$/);
   if (!task) {
-    return `<li ${sourceRangeAttributes(item.start, item.end, item.textStart)}>${inlineMarkdown(item.text)}</li>`;
+    return `<li ${sourceRangeAttributes(item.start, item.end, item.textStart)}>${inlineMarkdown(item.text, item.textStart)}</li>`;
   }
 
   const checked = task[1].toLowerCase() === "x" ? " checked" : "";
-  return `<li class="task-list-item" ${sourceRangeAttributes(item.start, item.end, item.textStart)}><input type="checkbox" disabled${checked}> ${inlineMarkdown(task[2])}</li>`;
+  return `<li class="task-list-item" ${sourceRangeAttributes(item.start, item.end, item.textStart)}><input type="checkbox" disabled${checked}> ${inlineMarkdown(task[2], item.textStart + task[0].length - task[2].length)}</li>`;
 }
 
 function getLineStartOffsets(markdown, lines) {
@@ -921,25 +986,50 @@ function renderTable(headers, alignments, rows, start, end) {
 }
 
 async function resolvePreviewImages(sequence) {
-  previewImageUrls.forEach((url) => URL.revokeObjectURL(url));
-  previewImageUrls = [];
-
   const images = Array.from(preview.querySelectorAll("img[data-local-src]"));
+  const currentLocalSources = new Set();
+
   for (const image of images) {
     if (sequence !== renderSequence) return;
     const src = image.getAttribute("data-local-src");
     if (!directoryHandle || !src || isExternalUrl(src)) continue;
+    currentLocalSources.add(src);
+
+    const cachedUrl = previewImageUrlCache.get(src);
+    if (cachedUrl) {
+      if (image.src !== cachedUrl) image.src = cachedUrl;
+      continue;
+    }
 
     try {
       const fileHandle = await getFileHandleByPath(src);
       const file = await fileHandle.getFile();
       const url = URL.createObjectURL(file);
-      previewImageUrls.push(url);
+      previewImageUrlCache.set(src, url);
       image.src = url;
     } catch {
       image.alt = `${image.alt || "image"} (見つかりません)`;
     }
   }
+
+  for (const [src, url] of previewImageUrlCache) {
+    if (!currentLocalSources.has(src)) {
+      URL.revokeObjectURL(url);
+      previewImageUrlCache.delete(src);
+    }
+  }
+}
+
+function getImageRenderSrc(src) {
+  if (!src || isExternalUrl(src)) return src;
+  return previewImageUrlCache.get(src) || src;
+}
+
+function clearPreviewImageCache() {
+  for (const url of previewImageUrlCache.values()) {
+    URL.revokeObjectURL(url);
+  }
+  previewImageUrlCache.clear();
 }
 
 async function getFileHandleByPath(path) {
@@ -1098,6 +1188,40 @@ function sanitizeUrl(url) {
   const trimmed = url.trim();
   if (/^(javascript|vbscript):/i.test(trimmed)) return "#";
   return trimmed;
+}
+
+function sanitizeHtmlTag(tag) {
+  const closing = tag.match(/^<\/\s*([a-zA-Z][a-zA-Z0-9-]*)\s*>$/);
+  if (closing) {
+    const tagName = closing[1].toLowerCase();
+    return ALLOWED_HTML_TAGS.has(tagName) && !VOID_HTML_TAGS.has(tagName) ? `</${tagName}>` : "";
+  }
+
+  const opening = tag.match(/^<\s*([a-zA-Z][a-zA-Z0-9-]*)([^<>]*)>$/);
+  if (!opening) return "";
+
+  const tagName = opening[1].toLowerCase();
+  if (!ALLOWED_HTML_TAGS.has(tagName)) return "";
+
+  const rawAttributes = opening[2] || "";
+  const selfClosing = /\/\s*$/.test(rawAttributes) || VOID_HTML_TAGS.has(tagName);
+  const attributes = [];
+  const attributePattern = /([a-zA-Z_:][a-zA-Z0-9_:.-]*)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
+  let match = attributePattern.exec(rawAttributes);
+
+  while (match) {
+    const name = match[1].toLowerCase();
+    const rawValue = match[2] || "";
+    match = attributePattern.exec(rawAttributes);
+
+    if (name.startsWith("on") || name === "style" || !ALLOWED_HTML_ATTRIBUTES.has(name)) continue;
+
+    const unquotedValue = rawValue.replace(/^["']|["']$/g, "");
+    const value = name === "href" || name === "src" ? sanitizeUrl(unquotedValue) : unquotedValue;
+    attributes.push(`${name}="${escapeAttr(value)}"`);
+  }
+
+  return `<${tagName}${attributes.length ? ` ${attributes.join(" ")}` : ""}${selfClosing ? ">" : ">"}`;
 }
 
 function isExternalUrl(url) {
