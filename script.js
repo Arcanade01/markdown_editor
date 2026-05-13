@@ -100,7 +100,7 @@ syntaxExamples.push(
   {
     group: "通常Markdown",
     label: "段落・改行・空白",
-    markdown: "段落は空行で分けます。\n同じ段落内の次の行です。\n\n行末に半角スペースを2つ入れると  \n明示的な改行として扱えます。\n\n全角スペース:　ここに余白があります。\nコードで空白を見せる: `A  B    C`"
+    markdown: "段落は空行で分けます。\n同じ段落内の次の行は、明示しない限り同じ段落として表示されます。\n\n行末に半角スペースを2つ入れると  \n明示的な改行として扱えます。\n\n行末にバックスラッシュを書いても\\\n明示的な改行になります。\n\n全角スペース:　ここに余白があります。\nコードで空白を見せる: `A  B    C`"
   },
   {
     group: "通常Markdown",
@@ -865,10 +865,7 @@ function markdownToHtml(markdown, headingSource) {
       paragraph.push(lines[index]);
       index += 1;
     }
-    html.push(`<p>${paragraph.map((text, offset) => {
-      const lineIndex = paragraphStart + offset;
-      return `<span ${sourceRangeAttributes(lineStarts[lineIndex], lineStarts[lineIndex] + lines[lineIndex].length, lineStarts[lineIndex])}>${inlineMarkdown(text, lineStarts[lineIndex])}</span>`;
-    }).join("<br>")}</p>`);
+    html.push(`<p>${renderParagraphLines(paragraph, paragraphStart, lineStarts, lines)}</p>`);
   }
 
   return html.join("\n");
@@ -917,8 +914,37 @@ function paragraphsFromLines(lines) {
   return lines
     .join("\n")
     .split(/\n{2,}/)
-    .map((paragraph) => `<p>${paragraph.split("\n").map(inlineMarkdown).join("<br>")}</p>`)
+    .map((paragraph) => `<p>${renderSimpleParagraphLines(paragraph.split("\n"))}</p>`)
     .join("");
+}
+
+function renderParagraphLines(paragraph, paragraphStart, lineStarts, allLines) {
+  return paragraph.map((text, offset) => {
+    const lineIndex = paragraphStart + offset;
+    const visibleText = stripHardBreakMarker(text);
+    const separator = getParagraphLineSeparator(text, offset, paragraph.length);
+    return `<span ${sourceRangeAttributes(lineStarts[lineIndex], lineStarts[lineIndex] + allLines[lineIndex].length, lineStarts[lineIndex])}>${inlineMarkdown(visibleText, lineStarts[lineIndex])}</span>${separator}`;
+  }).join("");
+}
+
+function renderSimpleParagraphLines(lines) {
+  return lines.map((text, index) => {
+    const visibleText = stripHardBreakMarker(text);
+    return `${inlineMarkdown(visibleText)}${getParagraphLineSeparator(text, index, lines.length)}`;
+  }).join("");
+}
+
+function getParagraphLineSeparator(line, index, lineCount) {
+  if (index >= lineCount - 1) return "";
+  return hasHardBreak(line) ? "<br>" : "\n";
+}
+
+function hasHardBreak(line) {
+  return /(?: {2,}|\\)$/.test(line);
+}
+
+function stripHardBreakMarker(line) {
+  return line.replace(/(?: {2,}|\\)$/, "");
 }
 
 function renderListItem(item) {
